@@ -79,11 +79,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def apply_personality(self, profile: str | None) -> str:
         """Apply a new personality (profile) at runtime if possible.
-
         - Updates the global config's selected profile for subsequent calls.
         - If a realtime connection is active, sends a session.update with the
           freshly resolved instructions so the change takes effect immediately.
-
         Returns a short status message for UI feedback.
         """
         try:
@@ -198,7 +196,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
-
         Does not block the caller while the new session is establishing.
         """
         try:
@@ -243,7 +240,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "type": "audio/pcm",
                                     "rate": self.input_sample_rate,
                                 },
-                                "transcription": {"model": "gpt-4o-transcribe", "language": "en"},
+# "transcription": {"model": "gpt-4o-transcribe", "language": "en"},  # Désactivé pour tester
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "interrupt_response": True,
@@ -281,9 +278,28 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._connected_event.set()
             except Exception:
                 pass
+            # #region agent log
+            try:
+                import json
+                with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run5","hypothesisId":"A","location":"openai_realtime.py:273","message":"Session configuration","data":{"transcriptionModel":"whisper-1","transcriptionLanguage":"auto-detect","inputSampleRate":self.input_sample_rate,"outputSampleRate":self.output_sample_rate},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+            except: pass
+            # #endregion
             async for event in self.connection:
                 logger.debug(f"OpenAI event: {event.type}")
+                # #region agent log
+                try:
+                    with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"D","location":"openai_realtime.py:281","message":"OpenAI event received","data":{"eventType":event.type},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+                except: pass
+                # #endregion
                 if event.type == "input_audio_buffer.speech_started":
+                    # #region agent log
+                    try:
+                        with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"D","location":"openai_realtime.py:283","message":"Speech started detected","data":{},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+                    except: pass
+                    # #endregion
                     if hasattr(self, "_clear_queue") and callable(self._clear_queue):
                         self._clear_queue()
                     if self.deps.head_wobbler is not None:
@@ -318,6 +334,18 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     self.partial_transcript_sequence += 1
                     current_sequence = self.partial_transcript_sequence
 
+                    # Update UI with partial transcription immediately
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "user",
+                        "content": event.transcript,
+                        "metadata": {"type": "user_transcription", "partial": True}
+                    }))
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "system",
+                        "content": "🔄 Transcription en cours...",
+                        "metadata": {"type": "transcription_status"}
+                    }))
+
                     # Cancel previous debounce task if it exists
                     if self.partial_transcript_task and not self.partial_transcript_task.done():
                         self.partial_transcript_task.cancel()
@@ -331,8 +359,42 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._emit_debounced_partial(event.transcript, current_sequence)
                     )
 
+                # Handle transcription failure
+                if event.type == "conversation.item.input_audio_transcription.failed":
+                    error_details = {}
+                    try:
+                        error = getattr(event, "error", None)
+                        if error:
+                            error_details = {
+                                "error": str(error),
+                                "code": str(getattr(error, "code", None)),
+                                "message": str(getattr(error, "message", None)),
+                            }
+                    except: pass
+                    # #region agent log
+                    try:
+                        with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"A","location":"openai_realtime.py:331","message":"Transcription failed","data":{"errorDetails":error_details},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+                    except: pass
+                    # #endregion
+                    logger.error("Transcription failed - error details: %s", error_details)
+                    # Send error status to UI
+                    error_msg = f"❌ Erreur de transcription: {error_details.get('message', 'Erreur inconnue')}"
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "system",
+                        "content": error_msg,
+                        "metadata": {"type": "transcription_status"}
+                    }))
+
                 # Handle completed transcription (user finished speaking)
                 if event.type == "conversation.item.input_audio_transcription.completed":
+                    # #region agent log
+                    try:
+                        transcript = getattr(event, "transcript", "")
+                        with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"A","location":"openai_realtime.py:345","message":"Transcription completed","data":{"transcript":transcript},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+                    except: pass
+                    # #endregion
                     logger.debug(f"User transcript: {event.transcript}")
 
                     # Cancel any pending partial emission
@@ -343,12 +405,26 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         except asyncio.CancelledError:
                             pass
 
-                    await self.output_queue.put(AdditionalOutputs({"role": "user", "content": event.transcript}))
+                    # Send transcription to chatbot and update status
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "user",
+                        "content": event.transcript,
+                        "metadata": {"type": "user_transcription"}
+                    }))
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "system",
+                        "content": "✅ Transcription reçue",
+                        "metadata": {"type": "transcription_status"}
+                    }))
 
                 # Handle assistant transcription
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     logger.debug(f"Assistant transcript: {event.transcript}")
-                    await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
+                    await self.output_queue.put(AdditionalOutputs({
+                        "role": "assistant",
+                        "content": event.transcript,
+                        "metadata": {"type": "assistant_transcription"}
+                    }))
 
                 # Handle audio delta
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
@@ -471,19 +547,26 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
     # Microphone receive
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
         """Receive audio frame from the microphone and send it to the OpenAI server.
-
         Handles both mono and stereo audio formats, converting to the expected
         mono format for OpenAI's API. Resamples if the input sample rate differs
         from the expected rate.
-
         Args:
             frame: A tuple containing (sample_rate, audio_data).
-
         """
         if not self.connection:
             return
 
         input_sample_rate, audio_frame = frame
+
+        # #region agent log - Check audio quality before processing
+        try:
+            audio_max = float(np.abs(audio_frame).max()) if hasattr(audio_frame, 'max') and audio_frame.size > 0 else 0
+            audio_mean = float(np.abs(audio_frame).mean()) if hasattr(audio_frame, 'mean') and audio_frame.size > 0 else 0
+            audio_std = float(np.abs(audio_frame).std()) if hasattr(audio_frame, 'std') and audio_frame.size > 0 else 0
+            with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"E","location":"openai_realtime.py:480","message":"Audio frame received","data":{"inputSampleRate":input_sample_rate,"shape":list(audio_frame.shape) if hasattr(audio_frame,'shape') else None,"dtype":str(audio_frame.dtype) if hasattr(audio_frame,'dtype') else None,"max":audio_max,"mean":audio_mean,"std":audio_std,"size":int(audio_frame.size) if hasattr(audio_frame,'size') else 0},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+        except: pass
+        # #endregion
 
         # Reshape if needed
         if audio_frame.ndim == 2:
@@ -501,11 +584,38 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Cast if needed
         audio_frame = audio_to_int16(audio_frame)
 
+        # #region agent log - Check final audio format before sending
+        try:
+            final_max = float(np.abs(audio_frame).max()) if audio_frame.size > 0 else 0
+            final_mean = float(np.abs(audio_frame).mean()) if audio_frame.size > 0 else 0
+            with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"C","location":"openai_realtime.py:499","message":"Audio frame final format","data":{"shape":list(audio_frame.shape),"dtype":str(audio_frame.dtype),"size":int(audio_frame.size),"max":final_max,"mean":final_mean},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+        except: pass
+        # #endregion
+
         # Send to OpenAI (guard against races during reconnect)
         try:
             audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
+            # #region agent log
+            try:
+                with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"B","location":"openai_realtime.py:503","message":"Audio frame sent to OpenAI","data":{"base64Len":len(audio_message),"hasConnection":self.connection is not None},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+            except: pass
+            # #endregion
             await self.connection.input_audio_buffer.append(audio=audio_message)
+            # #region agent log
+            try:
+                with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"B","location":"openai_realtime.py:506","message":"Audio frame appended successfully","data":{},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+            except: pass
+            # #endregion
         except Exception as e:
+            # #region agent log
+            try:
+                with open('/Users/lucasmaurici/Reachy_test/reachy_mini_conversation_app/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run3","hypothesisId":"B","location":"openai_realtime.py:510","message":"Error appending audio","data":{"error":str(e)},"timestamp":int(asyncio.get_event_loop().time()*1000)})+"\n")
+            except: pass
+            # #endregion
             logger.debug("Dropping audio frame: connection not ready (%s)", e)
             return
 
@@ -564,7 +674,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def get_available_voices(self) -> list[str]:
         """Try to discover available voices for the configured realtime model.
-
         Attempts to retrieve model metadata from the OpenAI Models API and look
         for any keys that might contain voice names. Falls back to a curated
         list known to work with realtime if discovery fails.
@@ -653,7 +762,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     def _persist_api_key_if_needed(self) -> None:
         """Persist the API key into `.env` inside `instance_path/` when appropriate.
-
         - Only runs in Gradio mode when key came from the textbox and is non-empty.
         - Only saves if `self.instance_path` is not None.
         - Writes `.env` to `instance_path/.env` (does not overwrite if it already exists).

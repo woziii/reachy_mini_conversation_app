@@ -21,10 +21,59 @@ from reachy_mini_conversation_app.utils import (
 )
 
 
-def update_chatbot(chatbot: List[Dict[str, Any]], response: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Update the chatbot with AdditionalOutputs."""
-    chatbot.append(response)
-    return chatbot
+def update_chatbot(
+    chatbot: List[Dict[str, Any]],
+    user_transcription: str,
+    transcription_status: str,
+    assistant_transcription: str,
+    response: Dict[str, Any],
+) -> tuple:
+    """Update the chatbot and transcription components with AdditionalOutputs."""
+    # Update transcription components based on response metadata
+    if isinstance(response, dict):
+        role = response.get("role", "")
+        content = response.get("content", "")
+        metadata = response.get("metadata", {})
+        metadata_type = metadata.get("type", "")
+        
+        # Handle system messages for status updates
+        if role == "system" and metadata_type == "transcription_status":
+            transcription_status = content
+        # Update user transcription
+        elif role == "user":
+            # Only add to chatbot if it's not a transcription-only message
+            if metadata_type != "user_transcription":
+                chatbot.append(response)
+            # Always update transcription display (including partial)
+            if isinstance(content, str) and content.strip():
+                user_transcription = content
+                is_partial = metadata.get("partial", False)
+                if is_partial:
+                    transcription_status = "🔄 Transcription en cours..."
+                elif transcription_status == "En attente..." or "❌" not in transcription_status:
+                    transcription_status = "✅ Transcription reçue"
+        # Update assistant transcription
+        elif role == "assistant":
+            # Only add to chatbot if it's not a transcription-only message
+            if metadata_type != "assistant_transcription":
+                chatbot.append(response)
+            # Always update transcription display
+            if isinstance(content, str) and content.strip() and metadata_type == "assistant_transcription":
+                assistant_transcription = content
+                transcription_status = "✅ Réponse reçue"
+        else:
+            # Default: add to chatbot
+            chatbot.append(response)
+        
+        # Handle transcription errors
+        if "error" in str(content).lower() or "failed" in str(content).lower():
+            if "❌" not in transcription_status:
+                transcription_status = f"❌ Erreur: {content}"
+    else:
+        # Fallback: just add to chatbot
+        chatbot.append(response)
+    
+    return chatbot, user_transcription, transcription_status, assistant_transcription
 
 
 def main() -> None:
@@ -120,10 +169,34 @@ def run(
             value=os.getenv("OPENAI_API_KEY") if not get_space() else "",
         )
 
+        # Transcription display components
+        user_transcription = gr.Textbox(
+            label="🎤 Transcription de votre parole",
+            value="",
+            interactive=False,
+            placeholder="En attente de transcription...",
+        )
+        transcription_status = gr.Textbox(
+            label="📊 Statut de la transcription",
+            value="En attente...",
+            interactive=False,
+        )
+        assistant_transcription = gr.Textbox(
+            label="🤖 Transcription de la réponse du robot",
+            value="",
+            interactive=False,
+            placeholder="En attente de transcription...",
+        )
+
         from reachy_mini_conversation_app.gradio_personality import PersonalityUI
 
         personality_ui = PersonalityUI()
         personality_ui.create_components()
+
+        # Store transcription components in handler for updates
+        handler.user_transcription_component = user_transcription
+        handler.transcription_status_component = transcription_status
+        handler.assistant_transcription_component = assistant_transcription
 
         stream = Stream(
             handler=handler,
@@ -134,7 +207,12 @@ def run(
                 api_key_textbox,
                 *personality_ui.additional_inputs_ordered(),
             ],
-            additional_outputs=[chatbot],
+            additional_outputs=[
+                chatbot,
+                user_transcription,
+                transcription_status,
+                assistant_transcription,
+            ],
             additional_outputs_handler=update_chatbot,
             ui_args={"title": "Talk with Reachy Mini"},
         )

@@ -12,9 +12,9 @@ dotenv_path = find_dotenv(usecwd=True)
 if dotenv_path:
     # Load .env and override environment variables
     load_dotenv(dotenv_path=dotenv_path, override=True)
-    logger.info(f"Configuration loaded from {dotenv_path}")
+    logger.info(f"[DIAGNOSTIC] Configuration loaded from {dotenv_path}")
 else:
-    logger.warning("No .env file found, using environment variables")
+    logger.warning("[DIAGNOSTIC] No .env file found, using environment variables")
 
 
 class Config:
@@ -29,9 +29,15 @@ class Config:
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
 
+    # Diagnostic logging
+    api_key_present = bool(OPENAI_API_KEY and OPENAI_API_KEY.strip())
+    api_key_preview = (OPENAI_API_KEY[:4] + "..." + OPENAI_API_KEY[-4:] if api_key_present and len(OPENAI_API_KEY) > 8 else "***") if api_key_present else "NOT SET"
+    logger.info(f"[DIAGNOSTIC] Config loaded - Model: {MODEL_NAME}, API Key: {api_key_preview} ({'present' if api_key_present else 'missing'})")
     logger.debug(f"Model: {MODEL_NAME}, HF_HOME: {HF_HOME}, Vision Model: {LOCAL_VISION_MODEL}")
 
     REACHY_MINI_CUSTOM_PROFILE = os.getenv("REACHY_MINI_CUSTOM_PROFILE")
+    if REACHY_MINI_CUSTOM_PROFILE:
+        logger.info(f"[DIAGNOSTIC] Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
     logger.debug(f"Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
 
 
